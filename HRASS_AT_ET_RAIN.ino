@@ -29,15 +29,14 @@ void blinkTask(void *pvParameters);
 void TBRGTask(void *pvParameters);
 void ATTask(void *pvParameters);
 void ETTask(void *pvParameters);
-
-TaskHandle_t Task1;
+void WDTask(void *pvParameters);
 
 
 QueueHandle_t LEDinputQueueHandle;
 QueueHandle_t TBRGinputQueueHandle;
 QueueHandle_t ATinputQueueHandle;
 QueueHandle_t ETinputQueueHandle;
-
+QueueHandle_t WDinputQueueHandle;
 
 
 enum BlinkType {
@@ -46,11 +45,10 @@ enum BlinkType {
   FAST_BLINK
 };
 
-
 signed int FREQ;
 signed int AT;
 signed int ET;
-
+signed int WD;
 
 /*
 char FREQ = 0;
@@ -91,6 +89,14 @@ void setup() {
     ESP.restart();
   }
 
+  WDinputQueueHandle = xQueueCreate(1, sizeof(WD));
+  if (ATinputQueueHandle == 0) {
+    Serial.println("Failed to create AT Queue");
+    vTaskDelay(1000);
+    ESP.restart();
+  }
+
+
   BaseType_t returnCode = xTaskCreatePinnedToCore(blinkTask, "Blink Task", 2000, NULL, 3, NULL, CONFIG_ARDUINO_RUNNING_CORE);
   if (returnCode != pdPASS) {
     log_e("Failed to create Blink Task");
@@ -125,6 +131,13 @@ void setup() {
     vTaskDelay(1000);
     ESP.restart();
   }
+
+  BaseType_t returnCode5 = xTaskCreatePinnedToCore(WDTask, "WD Task", 2000, NULL, 3, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+  if (returnCode != pdPASS) {
+    log_e("Failed to create WD Task");
+    vTaskDelay(1000);
+    ESP.restart();
+  }
 }
 
 void uartTask(void *pvParameters) {
@@ -139,6 +152,7 @@ void uartTask(void *pvParameters) {
       FREQ = Serial.parseInt();
       AT = Serial.parseInt();
       ET = Serial.parseInt();
+      WD = Serial.parseInt();
       if (Serial.read() == '\n') {
         //Serial.println("TBRG_FREQ");
         xQueueOverwrite(TBRGinputQueueHandle, &FREQ);
@@ -147,6 +161,7 @@ void uartTask(void *pvParameters) {
         //AT = static_cast<int>(round(AT1));
         xQueueOverwrite(ATinputQueueHandle, &AT);
         xQueueOverwrite(ETinputQueueHandle, &ET);
+        xQueueOverwrite(WDinputQueueHandle, &WD);
       }
     }
     //Serial.print("RFQ = ");
@@ -198,7 +213,7 @@ void ATTask(void *pvParameters) {
         }
         for (uint8_t x = 0; x < 4; ++x) {
           String channelStr = String(x);
-          if (potentio.writeRDAC(x, currentAT) == 0) {
+          if (potentio.writeRDAC(x, newAT) == 0) {
             Serial.println("Update RDAC of AT channel " + channelStr + " to " + String(newAT));
           } else {
             Serial.println("Cannot update RDAC of channel " + channelStr + ".");
@@ -219,8 +234,6 @@ void ATTask(void *pvParameters) {
     }
   }
 }
-
-
 
 void ETTask(void *pvParameters) {
   AD5254_asukiaaa potentio(AD5254_ASUKIAAA_ADDR_A0_GND_A1_VDD);
@@ -258,7 +271,7 @@ void ETTask(void *pvParameters) {
           String channelStr = String(x);
 
 
-          if (potentio.writeRDAC(x, currentET) == 0) {
+          if (potentio.writeRDAC(x, newET) == 0) {
             Serial.println("Update RDAC of ET channel " + channelStr + " to " + String(newET));
           } else {
             Serial.println("Cannot update RDAC of ET channel " + channelStr + ".");
@@ -279,6 +292,57 @@ void ETTask(void *pvParameters) {
     }
   }
 }
+
+void WDTask(void *pvParameters) {
+  AD5254_asukiaaa potentio3(AD5254_ASUKIAAA_ADDR_A0_GND_A1_GND);
+  potentio3.begin();
+  uint8_t targetChannel = 0;
+  //  unsigned int currentAT = atoi(AT);
+  // unsigned int newAT = atoi(AT);
+  unsigned int currentWD = 0;
+  unsigned int newWD = 0;
+  BaseType_t result5;
+  //char Temp;
+  signed int Winddir;
+  for (;;) {
+    if (currentWD == 0) {
+      result5 = xQueueReceive(WDinputQueueHandle, &Winddir, portMAX_DELAY);
+      //currentAT = atoi(&Temp);
+      newWD = Winddir;
+    }
+    if (currentWD != newWD) {
+      String channelStr = String(targetChannel);
+      uint8_t value;
+      for (uint8_t i = 0; i < 4; ++i) {
+        String indexStr = String(i);
+        if (potentio3.readRDAC(i, &value) == 0) {
+          // Serial.println("RDAC of channel " + indexStr + " is " + String(value));
+        } else {
+          Serial.println("Cannot read RDAC of WD channel " + indexStr + ".");
+        }
+        for (uint8_t x = 0; x < 4; ++x) {
+          String channelStr = String(x);
+          if (potentio3.writeRDAC(x, newWD) == 0) {
+            Serial.println("Update RDAC of WD channel " + channelStr + " to " + String(newWD));
+          } else {
+            Serial.println("Cannot update RDAC of WD channel " + channelStr + ".");
+          }
+        }
+      }
+      currentWD = newWD;
+    }
+    vTaskDelay(100);
+    result5 = xQueueReceive(WDinputQueueHandle, &Winddir, 0);
+    //currentAT = atoi(&Temp);
+    //currentET = Temp;
+    newWD = Winddir;
+    if (result5 == pdTRUE) {
+      //currentET = newET;
+      Serial.println("WD value changed");
+    }
+  }
+}
+
 
 void blinkTask(void *pvParameters) {
   const uint8_t ledPin = 8;
