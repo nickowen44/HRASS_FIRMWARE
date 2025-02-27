@@ -21,6 +21,7 @@ Change Log:
     002         10/02/2025       N.O            Added, Simulation mode using the HRASS on board barometer 
     003         17/02/2025       N.O            Added, temperature lookup table so that temperature can be commanded with signed value
     004         21/02/2025       N.O            Started work on WD look up table
+    005         22/02/2025       N.O            Added hardware WS functionality 
     
 */
 
@@ -29,8 +30,22 @@ Change Log:
 #include "MCP4728.h"
 #include <BME280I2C.h>
 #include "PT100.h"
-BME280I2C bme;  // Default : forced mode, standby time = 1000 ms
+#include "AD9850.h"
+#include "SPI.h"
+#include "AD985X.h"
 
+
+// AD9850 varaibles and defines
+#define AD9850_CS 10
+#define AD9850_RST 21
+uint32_t freq = 0;
+uint32_t prev = 0;
+uint32_t maxFreq;
+uint32_t AD9850_CLOCK = 125000000;  // Module crystal frequency. Tweak here for accuracy.
+
+AD9850 freqGen(AD9850_CS, AD9850_RST, AD9850_CS, 11, 12);  //  HW SPI
+
+BME280I2C bme;  // Default : forced mode, standby time = 1000 ms
 MCP4728 dac;
 //#include "NVP_Parser.h"
 
@@ -41,6 +56,7 @@ void ATTask(void *pvParameters);
 void ETTask(void *pvParameters);
 void WDTask(void *pvParameters);
 void RHTask(void *pvParameters);
+void WSTask(void *pvParameters);
 
 
 QueueHandle_t LEDinputQueueHandle;
@@ -48,6 +64,7 @@ QueueHandle_t TBRGinputQueueHandle;
 QueueHandle_t ATinputQueueHandle;
 QueueHandle_t ETinputQueueHandle;
 QueueHandle_t WDinputQueueHandle;
+QueueHandle_t WSinputQueueHandle;
 QueueHandle_t RHinputQueueHandle;
 QueueHandle_t BPinputQueueHandle;  //barometric pressure Queue
 
@@ -66,20 +83,15 @@ enum BlinkType {
 // Use Serial1 for UART communication
 HardwareSerial mySerial(2);
 
+
+
 signed int FREQ;
 signed int AT;
 signed int ET;
 signed int WD;
 signed int RH;
-signed int BP;  // default start with internal barometer data
-
-
-/*
-char FREQ = 0;
-char AT = 0;
-char ET = 0;
-*/
-
+signed int BP;
+signed int WS;
 
 
 
@@ -104,8 +116,14 @@ void setup() {
   mySerial.begin(9600, SERIAL_8N1, RXD1, TXD1);  // UART setup
   Serial.begin(115200);
   Serial.println("Starting HRASS");
-  Wire.begin(39, 40);
+  freqGen.begin();
+  freqGen.powerUp();
+  maxFreq = freqGen.getMaxFrequency();
+  Serial.println(maxFreq);
 
+
+
+  Wire.begin(39, 40);
   while (!bme.begin()) {
     Serial.println("Could not find BME280 sensor!");
     delay(1000);
@@ -156,6 +174,13 @@ void setup() {
   BPinputQueueHandle = xQueueCreate(1, sizeof(BP));
   if (BPinputQueueHandle == 0) {
     Serial.println("Failed to create BP Queue");
+    vTaskDelay(1000);
+    ESP.restart();
+  }
+
+  WSinputQueueHandle = xQueueCreate(1, sizeof(WS));
+  if (BPinputQueueHandle == 0) {
+    Serial.println("Failed to create WS Queue");
     vTaskDelay(1000);
     ESP.restart();
   }
@@ -215,6 +240,13 @@ void setup() {
     vTaskDelay(1000);
     ESP.restart();
   }
+
+  BaseType_t returnCode8 = xTaskCreatePinnedToCore(WSTask, "WS Task", 2000, NULL, 3, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+  if (returnCode != pdPASS) {
+    log_e("Failed to create WS Task");
+    vTaskDelay(1000);
+    ESP.restart();
+  }
 }
 
 void uartTask(void *pvParameters) {
@@ -227,11 +259,16 @@ void uartTask(void *pvParameters) {
 
       // look for the next valid integer in the incoming serial stream:
       FREQ = Serial.parseInt();
+
       AT = Serial.parseInt();
       ET = Serial.parseInt();
       WD = Serial.parseInt();
       RH = Serial.parseInt();
       BP = Serial.parseInt();
+      WS = Serial.parseInt();
+
+
+
 
       //AT= map(AT, -40, 60, 105, 212);
       //AT = AT + 40;
@@ -252,6 +289,7 @@ void uartTask(void *pvParameters) {
         xQueueOverwrite(WDinputQueueHandle, &WD);
         xQueueOverwrite(RHinputQueueHandle, &RH);
         xQueueOverwrite(BPinputQueueHandle, &BP);
+        xQueueOverwrite(WSinputQueueHandle, &WS);
       }
     }
     //Serial.print("RFQ = ");
@@ -476,6 +514,45 @@ void RHTask(void *pvParameters) {
   }
 }
 
+// WindSpeed
+void WSTask(void *pvParameters) {
+
+  unsigned int currentWS = 0;
+  unsigned int newWS = 0;
+  BaseType_t result8;
+  signed int WS;
+  for (;;) {
+    if (currentWS == 0) {
+      result8 = xQueueReceive(WSinputQueueHandle, &WS, portMAX_DELAY);
+      //currentAT = atoi(&Temp);
+      newWS = WS;
+    }
+    if (currentWS != newWS) {
+
+      //AD9850_set_frequency(newWS);
+      freqGen.setFrequencyF(newWS * 1.8);
+
+
+
+      delay(2);
+      currentWS = newWS;
+    }
+    vTaskDelay(100);
+    result8 = xQueueReceive(WSinputQueueHandle, &WS, 0);
+    //currentAT = atoi(&Temp);
+    //currentET = Temp;
+    newWS = WS;
+    if (result8 == pdTRUE) {
+      //currentET = newET;
+      Serial.println("WS value changed");
+    }
+  }
+}
+
+
+
+
+
 
 void BPTask(void *pvParameters) {
   unsigned int currentBP = 0;
@@ -680,7 +757,7 @@ void TBRGTask(void *pvParameters) {
       if (currentTBRG_FREQ != 0) {
         digitalWrite(TBRGPin, HIGH);
         //vTaskDelay(atoi(RPW));
-        vTaskDelay(10);
+        vTaskDelay(150);  //pulse width
         digitalWrite(TBRGPin, LOW);
         vTaskDelay(currentTBRG_FREQ);
         //Serial.print("FREQ = ");
