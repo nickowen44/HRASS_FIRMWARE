@@ -1,6 +1,6 @@
-const int BufLen = 104;  //size of TempLUT
+const int ATBufLen = 104;  //size of TempLUT
 //int TempLUT[] = {105,106,107,107,108,109,110,111,112,113,114,115,116,117,118,119,120};
-int AT_TempLUT[BufLen][2] = {
+int AT_TempLUT[ATBufLen][2] = {
   //{Deg C, Digipot 8bit value}
   { -41, 104 },  //-40
   { -40, 105 },  //-40
@@ -109,15 +109,15 @@ int AT_TempLUT[BufLen][2] = {
 };
 
 
-int TempConvert(int t, int BufLen) {
+int Lookup(int t, int array[361][2], int BufLen) {
   int idx = 0;
   int value = 0;
   //Serial.print("T Value");
   //Serial.println(t);
   for (idx = 0; idx < BufLen; idx++) {
     //Serial.println(AT_TempLUT[idx][0]);
-    if (AT_TempLUT[idx][0] == t) {
-      value = AT_TempLUT[idx][1];
+    if (array[idx][0] == t) {
+      value = array[idx][1];
       break;
     }
   }

@@ -21,7 +21,9 @@ Change Log:
     002         10/02/2025       N.O            Added, Simulation mode using the HRASS on board barometer 
     003         17/02/2025       N.O            Added, temperature lookup table so that temperature can be commanded with signed value
     004         21/02/2025       N.O            Started work on WD look up table
-    005         22/02/2025       N.O            Added hardware WS functionality 
+    005         22/02/2025       N.O            Added hardware WS functionalit"y 
+    006         27/02/2025       N.O            Added Settings 
+    007         28/02/2025       N.0            Added PTB220 Almos Functionality 
     
 */
 
@@ -30,6 +32,7 @@ Change Log:
 #include "MCP4728.h"
 #include <BME280I2C.h>
 #include "PT100.h"
+#include "WD.h"
 #include "AD9850.h"
 #include "SPI.h"
 #include "AD985X.h"
@@ -41,10 +44,11 @@ Change Log:
 uint32_t freq = 0;
 uint32_t prev = 0;
 uint32_t maxFreq;
-uint32_t AD9850_CLOCK = 125000000;  // Module crystal frequency. Tweak here for accuracy.
-
+uint32_t AD9850_CLOCK = 125000000;                         // Module crystal frequency. Tweak here for accuracy.
+int WsUnits = 1;                                           //start with windspeed units m/s
 AD9850 freqGen(AD9850_CS, AD9850_RST, AD9850_CS, 11, 12);  //  HW SPI
 
+int BaroType = 1;   // Default PTB330A, DMU801 Feb 2025 message format
 BME280I2C bme;  // Default : forced mode, standby time = 1000 ms
 MCP4728 dac;
 //#include "NVP_Parser.h"
@@ -111,6 +115,61 @@ char *GenerateCheckSum(char *buf, long bufLen) {
   sprintf(tmpBuf, "%02X", (unsigned int)(cks % 256));
   return tmpBuf;
 }
+
+void SetBaud(int BConfig) {
+
+  switch (BConfig) {
+    case 1:
+      mySerial.begin(9600, SERIAL_8N1, RXD1, TXD1);  // UART setup
+      Serial.println("RS232 Baud:9600, Databits:8, Parity:N, Stop Bits:1");
+      break;
+    case 2:
+      mySerial.begin(1200, SERIAL_7E1, RXD1, TXD1);  // UART setup
+      Serial.println("RS232 Baud:1200, Databits:7, Parity:E, Stop Bits:1");
+      break;
+    default:
+      Serial.println("RS232 Baud not changed");
+      break;
+  }
+}
+
+void setWsUnits(int units) {
+  switch (units) {
+    case 1:
+      WsUnits = 1;  // metres per a second
+      Serial.println("windspeed set to metres per a second");
+      xQueueOverwrite(WSinputQueueHandle, &WS);
+      WS = 0;
+      break;
+    case 2:
+      WsUnits = 2;  // knots
+      Serial.println("windspeed set to knots");
+      WS = 0;
+      xQueueOverwrite(WSinputQueueHandle, &WS);
+      break;
+    default:
+      Serial.println("windspeed units not set");
+      break;
+  }
+}
+
+void setBaroType(int type) {
+  switch (type) {
+    case 1:
+      BaroType = 1;  // metres per a second
+      Serial.println("PTB330A DMU801 Feb2025 Message Format");
+      break;
+    case 2:
+      BaroType = 2;  // metres per a second
+      Serial.println("PTB220 Almos Message Format");
+      break;
+    default:
+      Serial.println("Barometer not set");
+      break;
+  }
+}
+
+
 
 void setup() {
   mySerial.begin(9600, SERIAL_8N1, RXD1, TXD1);  // UART setup
@@ -259,7 +318,6 @@ void uartTask(void *pvParameters) {
 
       // look for the next valid integer in the incoming serial stream:
       FREQ = Serial.parseInt();
-
       AT = Serial.parseInt();
       ET = Serial.parseInt();
       WD = Serial.parseInt();
@@ -267,29 +325,35 @@ void uartTask(void *pvParameters) {
       BP = Serial.parseInt();
       WS = Serial.parseInt();
 
-
-
-
-      //AT= map(AT, -40, 60, 105, 212);
-      //AT = AT + 40;
-      //AT = AT_TempLUT[AT][1];
-      //Serial.println(AT);
-      ET = TempConvert(ET, BufLen);
-      AT = TempConvert(AT, BufLen);
       //Serial.println(AT);
 
       if (Serial.read() == '\n') {
-        //Serial.println("TBRG_FREQ");
-        xQueueOverwrite(TBRGinputQueueHandle, &FREQ);
-        //Serial.println("AT DEG C");
-        //float AT1 = 0.94008 * AT - 132.6537 + 19;
-        //AT = static_cast<int>(round(AT1));
-        xQueueOverwrite(ATinputQueueHandle, &AT);
-        xQueueOverwrite(ETinputQueueHandle, &ET);
-        xQueueOverwrite(WDinputQueueHandle, &WD);
-        xQueueOverwrite(RHinputQueueHandle, &RH);
-        xQueueOverwrite(BPinputQueueHandle, &BP);
-        xQueueOverwrite(WSinputQueueHandle, &WS);
+        //Serial.println(FREQ);
+        if (FREQ == -1) {
+          Serial.println("CONFIG");
+          SetBaud(AT);
+          setWsUnits(ET);
+          setBaroType(WD);
+
+        }
+
+        else {
+          ET = Lookup(ET, AT_TempLUT, ATBufLen);
+          AT = Lookup(AT, AT_TempLUT, ATBufLen);
+          WD = Lookup(WD, WD_LUT, WDBufLen);
+          //Serial.println("TBRG_FREQ");
+          xQueueOverwrite(TBRGinputQueueHandle, &FREQ);
+          //Serial.println("AT DEG C");
+          //float AT1 = 0.94008 * AT - 132.6537 + 19;
+          //AT = static_cast<int>(round(AT1));
+          xQueueOverwrite(ATinputQueueHandle, &AT);
+          xQueueOverwrite(ETinputQueueHandle, &ET);
+          xQueueOverwrite(WDinputQueueHandle, &WD);
+          xQueueOverwrite(RHinputQueueHandle, &RH);
+          xQueueOverwrite(BPinputQueueHandle, &BP);
+          xQueueOverwrite(WSinputQueueHandle, &WS);
+        }
+        // Serial.flush();
       }
     }
     //Serial.print("RFQ = ");
@@ -304,6 +368,7 @@ void uartTask(void *pvParameters) {
     vTaskDelay(100);
   }
 }
+
 
 
 void ATTask(void *pvParameters) {
@@ -528,12 +593,16 @@ void WSTask(void *pvParameters) {
       newWS = WS;
     }
     if (currentWS != newWS) {
-
+      Serial.println("windspeed updated");
       //AD9850_set_frequency(newWS);
-      freqGen.setFrequencyF(newWS * 1.8);
-
-
-
+      if (WsUnits == 1) {
+        Serial.println("units : m/s");
+        freqGen.setFrequencyF(newWS * 1.8);
+      }
+      if (WsUnits == 2) {
+        Serial.println("units : knots");
+        freqGen.setFrequencyF(newWS * 1.94384);
+      }
       delay(2);
       currentWS = newWS;
     }
@@ -589,36 +658,50 @@ void BPTask(void *pvParameters) {
       Serial.print(pres);
       Serial.println("KPa");
 
-      //dtostrf(pres, 5, 2, PTBbuffer);  //convert float to string
-      PTBpresstring = ("PTB330A_U1234567|P=");
-      if (newBP < 1000) { PTBpresstring += "0"; }
-      PTBpresstring += newBP;
-      PTBpresstring += ".00|P1=";
-      if (newBP < 1000) { PTBpresstring += "0"; }
-      PTBpresstring += newBP;
-      PTBpresstring += ".00|P2=";
-      if (newBP < 1000) { PTBpresstring += "0"; }
-      PTBpresstring += newBP;
-      PTBpresstring += ".00|P3=";
-      if (newBP < 1000) { PTBpresstring += "0"; }
-      PTBpresstring += newBP;
-      PTBpresstring += ".00|TP1=0";
-      PTBpresstring += temp;
-      PTBpresstring += "|TP2=0";
-      PTBpresstring += temp;
-      PTBpresstring += "|TP3=0";
-      PTBpresstring += temp;
-      PTBpresstring += "|ERR=000";
-      PTBpresstring += "|CS=";
-      // Call the checksum function and print the result
-      int n = PTBpresstring.length();
-      // declaring character array (+1 for null
-      // character)
-      char arr[n + 1];
-      strcpy(arr, PTBpresstring.c_str());
-      char *checksum = GenerateCheckSum(arr, strlen(arr));
+      if (BaroType == 1) { //PTB330A DMU801 FEB 2025 Message Format
+        //dtostrf(pres, 5, 2, PTBbuffer);  //convert float to string
+        PTBpresstring = ("PTB330A_U1234567|P=");
+        if (newBP < 1000) { PTBpresstring += "0"; }
+        PTBpresstring += newBP;
+        PTBpresstring += ".00|P1=";
+        if (newBP < 1000) { PTBpresstring += "0"; }
+        PTBpresstring += newBP;
+        PTBpresstring += ".00|P2=";
+        if (newBP < 1000) { PTBpresstring += "0"; }
+        PTBpresstring += newBP;
+        PTBpresstring += ".00|P3=";
+        if (newBP < 1000) { PTBpresstring += "0"; }
+        PTBpresstring += newBP;
+        PTBpresstring += ".00|TP1=0";
+        PTBpresstring += temp;
+        PTBpresstring += "|TP2=0";
+        PTBpresstring += temp;
+        PTBpresstring += "|TP3=0";
+        PTBpresstring += temp;
+        PTBpresstring += "|ERR=000";
+        PTBpresstring += "|CS=";
+        // Call the checksum function and print the result
+        int n = PTBpresstring.length();
+        // declaring character array (+1 for null
+        // character)
+        char arr[n + 1];
+        strcpy(arr, PTBpresstring.c_str());
+        char *checksum = GenerateCheckSum(arr, strlen(arr));
+        PTBpresstring += checksum;
+      }
 
-      PTBpresstring += checksum;
+      if (BaroType == 2) { //PTB220 ALMOS Message Format
+       
+       PTBpresstring = " ";
+        PTBpresstring += newBP*10;
+        PTBpresstring += " ";
+        PTBpresstring += newBP*10;
+        PTBpresstring += " ";
+        PTBpresstring += newBP*10;
+        PTBpresstring += " 00000101 ";
+        PTBpresstring += newBP*10;
+        PTBpresstring += " -26";
+      }
 
       Serial.println(PTBpresstring);
       //Serial.println(checksum);
